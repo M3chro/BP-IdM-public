@@ -1,0 +1,94 @@
+services:
+  # Keycloak PostgreSQL Databáze
+  postgres_db-keycloak:
+    image: postgres:17.2
+    container_name: postgres_db-keycloak
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      - type: volume
+        source: postgres_db-keycloak-data_volume
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U keycloak -d keycloak" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - keycloak-network
+
+  # Keycloak Server
+  keycloak_server:
+    image: quay.io/keycloak/keycloak:26.1.0
+    container_name: keycloak_server
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres_db-keycloak
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_SCHEMA: public
+      KC_DB_USER: keycloak
+      KC_DB_PASSWORD: keycloak
+
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+
+      KEYCLOAK_ADMIN: admin # Přihlášení do Keycloak
+      KEYCLOAK_ADMIN_PASSWORD: admin # Přihlášení do Keycloak
+      KEYCLOAK_HOSTNAME: localhost # Hostname Keycloak
+    ports:
+      - "8080:8080"
+    healthcheck: # Port 9000 - Keycloak Management Endpointy
+      test: [
+        "CMD-SHELL",
+        "exec 3<>/dev/tcp/localhost/9000; \
+        echo -en 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; \
+        if timeout 3 cat <&3 | grep -m 1 'UP'; then \
+          exec 3<&-; exec 3>&-; exit 0; \
+        else \
+          exec 3<&-; exec 3>&-; exit 1; \
+        fi"
+      ]
+      start_period: 10s
+      interval: 5s
+      timeout: 2s
+      retries: 20
+    depends_on:
+      postgres_db-keycloak:
+        condition: service_healthy
+    networks:
+      - keycloak-network
+
+# FastAPI Aplikace
+  fastapi_app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastapi_app
+    ports:
+      - "8000:8000"
+    volumes:
+      - type: bind
+        source: ./backend/src
+        target: /backend/src
+    env_file:
+      - .env
+    depends_on:
+      keycloak_server:
+        condition: service_healthy
+    networks:
+      - backend-network
+      - keycloak-network
+
+networks:
+  keycloak-network:
+    name: keycloak-network
+    driver: bridge
+  backend-network:
+    name: backend-network
+    driver: bridge
+
+volumes:
+  postgres_db-keycloak-data_volume:
